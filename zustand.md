@@ -348,13 +348,17 @@ useIsomorphicLayoutEffect(() => {
 
 重点在 listener 函数中，先获取到最新的选中状态，然后和当前的对比，如果有变化，执行 forceUpdate，如果发生错误了，也会执行 forceUpdate。
 
-最后会将最新的选择状态返回。
+这里放置`try catch`的原因是为了防止[僵尸子元素](https://react-redux.js.org/api/hooks#stale-props-and-zombie-children)。在 listener 回调中，执行 selector 函数如果出错了，那么可能是因为回调的添加顺序和执行顺序导致的。这时候尝试在更新一次组件，看看能不能解决。同时，`erroredRef.current`置为 true。从上面的代码中可以看到，如果 `erroredRef.current === true`，selector 函数一定会被执行，用来计算 newStateSlice。这时候如果还是报错，那么错误会被直接抛出。
+
+但是`stale props`的问题还是没能完全解决。多个层级的组件更新如果不使用`unstable_batchedUpdates`包装，还是会存在更新顺序的问题，很可能造成意外的报错情况。
 
 ```js
 return hasNewStateSlice
 	? (newStateSlice as StateSlice)
 	: currentSliceRef.current
 ```
+
+最后会将最新的选择状态返回。
 
 ### Middleware
 
