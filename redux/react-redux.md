@@ -408,7 +408,7 @@ useIsomorphicLayoutEffect(() => {
 
 在 checkForUpdates 函数中，会判断当前的 state 有没有发生变化，已经当前的 selectedState 有没有发生变化，如果有变化就更新。在执行 selector 函数的过程中，如果出错了，只会默默的记录下来，不会阻断更新。这是为了不受[僵尸子元素](https://react-redux.js.org/api/hooks#stale-props-and-zombie-children)的影响。
 
-如果看过[zustand](./zustand.md)的源码，就会发现它们之间的绑定相关逻辑几乎一样。但是 react-redux 这里为什么要搞一个多层级的 subscription 呢？这看起来似乎多此一举。这就要考虑到 hoc 方式的 api 了。
+如果看过[zustand](../zustand.md)的源码，就会发现它们之间的绑定相关逻辑几乎一样。但是 react-redux 这里为什么要搞一个多层级的 subscription 呢？这看起来似乎多此一举。这就要考虑到 hoc 方式的 api 了。
 
 为了防止[stale props](https://react-redux.js.org/api/hooks#stale-props-and-zombie-children)，主要原因是子组件先渲染完成，先于父组件绑定更新函数，在 state 变化时，子组件的更新函数先执行，这就可能造成子组件使用了旧的 props。所以在`connect`中，会为每一个被包裹的组件添加一个新的上下文，在这个上下文中添加新的 subscription，这样就形成了一个多层级的 subscription 结构。子组件的更新函数存在父 subscription 中，需要通过父 subscription 调用 notifyNestedSubs 才能执行更新。这就可以让父组件在更新自身后再执行子组件更新，因为这时候子组件的 props 肯定是最新的。
 
