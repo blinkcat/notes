@@ -655,3 +655,217 @@ Route.prototype.dispatch = function dispatch(req, res, done) {
 ## conclusion
 
 总体上看下来，express 的代码还是比较精简的，实现 middleware 的方式巧妙。
+
+## 2022-03-15 重读
+
+版本 [4.17.3](https://github.com/expressjs/express/tree/4.17.3)
+
+距离上次阅读已经有一年多的时间了，大部分内容都已经忘记了。这次重读的起因是在查看[webpack-dev-server](./webpack-dev-server.md)的源码时，发觉 express 的中间件机制的扩展性非常强，这让 express 在这么多年中依然能够在众多竞争者中保留一块领地。
+
+一个框架总是可以从中发现某些固定角色，在一个流程中，各个角色各司其职，有序的发生交互，推动这个流程进行下去。
+
+在 express 中，我们有 app、router、route、request、response 以及各种 middleware(中间件)。整个框架的流程就是监听端口，接收一个`http.IncomingMessage`对象和一个`http.ServerResponse`对象，简称为 req 和 res。req 中携带了请求信息，而 res 则是用来向请求方回复消息的。在 express 中，这两个对象会经过一个个符合条件的 middleware 处理，最终由某个路由或是某个中间件来回复请求，结束整个流程。这样的处理方式符合职责链模式。
+
+在接收到请求时，req 和 res 都是 node 原生对象。express 通过原型链给二者添加了很多实用的方法和属性。
+
+```js
+// lib/middleware/init.js
+var setPrototypeOf = require("setprototypeof");
+// ...
+setPrototypeOf(req, app.request);
+setPrototypeOf(res, app.response);
+```
+
+在我们创建 express 应用的时候，会调用一个工厂方法，这个方法返回一个 app 函数，这个函数符合中间件的签名。而它的各种方法都是通过[复制](https://github.com/component/merge-descriptors)的方式获得。这里和上面的 req、res 的做法不同，个人感觉应该是设计上的马虎。
+
+```js
+// lib/express.js
+var EventEmitter = require("events").EventEmitter;
+var mixin = require("merge-descriptors");
+// ...
+function createApplication() {
+  var app = function (req, res, next) {
+    app.handle(req, res, next);
+  };
+  mixin(app, EventEmitter.prototype, false);
+  mixin(app, proto, false);
+  // ...
+  app.init();
+  return app;
+}
+```
+
+再看一下路由 router 的创建方式，也是如出一辙。不过这次添加方法的方式又变成了原型链。
+
+```js
+// lib/router/index.js
+var setPrototypeOf = require("setprototypeof");
+// ...
+var proto = (module.exports = function (options) {
+  var opts = options || {};
+
+  function router(req, res, next) {
+    router.handle(req, res, next);
+  }
+
+  // mixin Router class functions
+  setPrototypeOf(router, proto);
+
+  router.params = {};
+  router._params = [];
+  router.caseSensitive = opts.caseSensitive;
+  router.mergeParams = opts.mergeParams;
+  router.strict = opts.strict;
+  router.stack = [];
+
+  return router;
+});
+```
+
+两者的处理逻辑都交由自身的`handle`方法，但是在 app 的内部，它的 handle 方法也是交由隐式创建的 router 对象处理的。
+
+```js
+app.handle = function handle(req, res, callback) {
+  var router = this._router;
+  // ...
+  router.handle(req, res, done);
+};
+```
+
+之前谈到中间件的签名，有两种，第二种的入参多了一个 error，专门用来处理错误。最后一个 next 是触发下个路由或者中间件的函数。
+
+```js
+(req, res, next) => {
+  // ...
+};
+
+(error, req, res, next) => {
+  // ...
+};
+```
+
+这个函数在 router 的 handle 方法中定义，在这里我们执行所有匹配的中间件，包括路由。
+
+```js
+// lib/router/index.js
+proto.handle = function handle(req, res, out) {
+  // ...
+  next();
+  // ...
+  function next(err) {
+    // ...
+    if (err) {
+      return next(layerError || err);
+    }
+
+    if (route) {
+      return layer.handle_request(req, res, next);
+    }
+
+    trim_prefix(layer, layerError, layerPath, path);
+    // ...
+  }
+
+  function trim_prefix(layer, layerError, layerPath, path) {
+    // ...
+    if (layerError) {
+      layer.handle_error(layerError, req, res, next);
+    } else {
+      layer.handle_request(req, res, next);
+    }
+  }
+};
+```
+
+这个函数中信息比较丰富，首先我们的中间件和路由处理函数并不是直接保存在 router 中，而是包装成`Layer`对象，这个对象提供了方法来判断当前的请求 url 和自身代表的路由或者中间件是否匹配。因为我们在定义这二者的时候，都会和某个 path 对应起来，默认的 path 是`'/'`。
+
+其次是这个`out`入参，它代表这处理流程的出口。router 对象中所有的中间件和路由都存在一个`stack`数组中。而每个特定路由对应的处理函数由一个`Route`对象负责。一个路由可以有不同的处理方法，例如`GET`、`POST`、`PUT`等，每个处理方法又可以定义多个函数。对此，Route 对象也是将这些函数封装成`Layer`对象，存在自己的`stack`数组中。
+
+同样的它的处理方式和 router 中的一样。注意这里的`done`入参，
+
+```js
+// lib/router/route.js
+Route.prototype.dispatch = function dispatch(req, res, done) {
+  var idx = 0;
+  var stack = this.stack;
+  if (stack.length === 0) {
+    return done();
+  }
+  // ...
+  next();
+  function next(err) {
+    // signal to exit route
+    if (err && err === "route") {
+      return done();
+    }
+
+    // signal to exit router
+    if (err && err === "router") {
+      return done(err);
+    }
+
+    var layer = stack[idx++];
+    if (!layer) {
+      return done(err);
+    }
+
+    if (layer.method && layer.method !== method) {
+      return next(err);
+    }
+
+    if (err) {
+      layer.handle_error(err, req, res, next);
+    } else {
+      layer.handle_request(req, res, next);
+    }
+  }
+};
+```
+
+这个 done 函数就是上面提到的 router.handle 中提供的 next 函数。表示执行完对应路由的处理流程后，再回到上层的 router 对象的处理流程中。我们从路由的定义中，可以证明这点。在创建 Layer 对象的过程中，传入的执行函数是`route.dispatch.bind(route)`。
+
+```js
+// lib/router/index.js
+proto.route = function route(path) {
+  var route = new Route(path);
+
+  var layer = new Layer(
+    path,
+    {
+      sensitive: this.caseSensitive,
+      strict: this.strict,
+      end: true,
+    },
+    route.dispatch.bind(route)
+  );
+
+  layer.route = route;
+
+  this.stack.push(layer);
+  return route;
+};
+```
+
+所以整个中间件和路由的处理流程大致如下，
+
+```shell
+app--router--
+            |
+            middileware1
+            |
+            middileware2
+            |
+            route--
+                  |
+                  fn1
+                  |
+                  fn2
+                  |
+            | --  done
+            |
+            middileware3
+            |
+            middileware4
+```
+
+最后注意的一点是在整个流程中的错误处理。在 router.handle 已经 route.dispatch 中的 next 函数都有个`err`入参，这个入参是相邻的两个中间件直接沟通的方式之一。目前可以传递错误对象、`'route'`以及`'router'`。如果是错误对象，那么会跳过所有的 3 个参数的中间件或者路由，直到遇到 4 个入参的中间件。

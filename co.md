@@ -108,7 +108,7 @@ function spawn(genF) {
           });
       }
     }
-    next(() => gen.next());
+    step(() => gen.next());
   });
 }
 ```

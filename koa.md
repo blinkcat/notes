@@ -155,3 +155,81 @@ delegate(proto, "request").method("acceptsLanguages")...
 ## conclusion
 
 koa 本身只保留了很核心的部分，如 middleware，response，request。其他功能包括 router，static，bodyparser 都由额外的中间件提供。相比于 express，koa 更加精简。大量使用 promise 来实现功能，肯定比 callback 的方式更加先进。
+
+## 2022-03-16
+
+再次重温了 koa 的中间件设计，利用了原生的`async`、`await`语法，简化了实现的代码。同时在错误处理上也因为`Promise`的错误处理机制变得更加自然。
+
+koa 首先会用`use`函数收集中间件到一个`middleware`数组中。这里没有像 express 那样，再使用`Layer`对象封装，一是因为 koa 自身没有和路由功能绑定，二是它的中间件在错误处理是只需要利用`try`、`catch`。
+
+在监听端口后，接收到请求时，这个中间件数组会被`compose`函数包起来，得到一个函数。这个函数执行后会返回 Promise。
+
+```js
+const fn = compose(this.middleware);
+// ...
+return fnMiddleware(ctx).then(handleResponse).catch(onerror);
+```
+
+如果正常执行完毕，调用 handleResponse，否则调用 onerror。整个过程就是一个 Promise 的链式处理过程，非常简单直观。
+
+compose 将整个中间件数组封装成一个中间件，这里最巧妙的是它连接各个中间件的方式。
+
+```js
+/**
+ * Compose `middleware` returning
+ * a fully valid middleware comprised
+ * of all those which are passed.
+ *
+ * @param {Array} middleware
+ * @return {Function}
+ * @api public
+ */
+
+function compose(middleware) {
+  if (!Array.isArray(middleware))
+    throw new TypeError("Middleware stack must be an array!");
+  for (const fn of middleware) {
+    if (typeof fn !== "function")
+      throw new TypeError("Middleware must be composed of functions!");
+  }
+
+  /**
+   * @param {Object} context
+   * @return {Promise}
+   * @api public
+   */
+
+  return function (context, next) {
+    // last called middleware #
+    let index = -1;
+    return dispatch(0);
+    function dispatch(i) {
+      if (i <= index)
+        return Promise.reject(new Error("next() called multiple times"));
+      index = i;
+      let fn = middleware[i];
+      if (i === middleware.length) fn = next;
+      if (!fn) return Promise.resolve();
+      try {
+        return Promise.resolve(fn(context, dispatch.bind(null, i + 1)));
+      } catch (err) {
+        return Promise.reject(err);
+      }
+    }
+  };
+}
+```
+
+还是这个`next`入参，它就像一个门一样。执行它，就像打开连接另一个中间件的大门。在首次运行的时候，next 为空，这就像是一个出口。当所有的中间件都执行完毕时，返回一个空的表示成功的 Promise。一般情况下，next 是柯里化之后的 dispatch，带有下个需要执行的中间件的序号。因为 koa 要求中间件执行后返回 Promise，所以这里就变成了，多个 Promise 嵌套在一起，内层的状态决定外层的状态。异步代码的执行顺序得到保证。
+
+在 express 中如果 next 是在执行异步调用任务时调用的，那么它的中间件的执行顺序和在同步调用的情况下不同。
+
+```js
+// sync
+a - b - c - c - b - a;
+
+// async
+a - a - b - b - c - c;
+```
+
+而 koa 的这种实现方式和规定的使用方式(await next())保证了中间件的执行顺序始终一致。
