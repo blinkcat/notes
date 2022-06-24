@@ -560,3 +560,22 @@ const useStoreApi = () => {
 ```
 
 所以不是很推荐这样使用。
+
+## 再探 zustand
+
+版本[v4.0.0-rc.1](https://github.com/pmndrs/zustand/tree/v4.0.0-rc.1)
+
+这个版本相比之前的版本，在内部实现上有了相当大的变化。
+
+首先是 useStore 这个 hook 使用了 react 官方的实现，[useSyncExternalStoreWithSelector](./react/useSyncExternalStore.md)。功能上不仅和之前的实现相同，而且还可以省略大量的代码。
+
+如果将 zustand 和 redux 比较，zustand 就像是弱化了 reducer 和 action，并且自带 redux-thunk 的 redux。而 zustand 的中间件就像是 redux 的 middleware 加上 storeEnhancer 的混合体。但是在设计上，redux 追求的是通过 dispatch 某个 action，来实现业务逻辑上的封装、解耦和复用。而 zustand 把 state 和修改 state 的方法都放在一个 object 中，这就导致了几个问题，
+
+1. 多个方法之间不能直接调用对方，难以复用逻辑
+2. 子状态和方法容易发生命名冲突
+
+因此，zustand 比较适合小型项目，或者是嵌入到其他 library 中。
+
+## References
+
+1. [TypeScript Guide](https://github.com/pmndrs/zustand/blob/main/docs/typescript.md)
